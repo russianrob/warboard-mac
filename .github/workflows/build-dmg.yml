@@ -41,11 +41,82 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build (Release, universal)
-        # Code signing intentionally disabled — produces an unsigned
-        # universal binary. macOS Gatekeeper will warn first launch;
-        # users right-click → Open or run xattr -dr com.apple.quarantine.
+      - name: Detect Developer ID certificate
+        # Same env-into-output dance as sparkle_check below — secrets
+        # aren't allowed in `if:` conditions.
+        id: cert_check
+        env:
+          CERT: ${{ secrets.MACOS_CERT_P12_BASE64 }}
         run: |
+          if [[ -n "$CERT" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::MACOS_CERT_P12_BASE64 not set — building unsigned. See docs/SIGNING.md."
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.cert_check.outputs.available == 'true'
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          # Create + unlock a throwaway keychain so the .p12 never
+          # touches the runner's login keychain.
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode -o "$CERT_PATH"
+          security import "$CERT_PATH" \
+            -P "$MACOS_CERT_P12_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          rm "$CERT_PATH"
+
+          # Allow codesign to use the key without an interactive prompt.
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          # Make the temp keychain the default search path so xcodebuild
+          # finds the identity. Preserve the existing user keychains too.
+          EXISTING="$(security list-keychains -d user | tr -d '"')"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $EXISTING
+
+          # Sanity print — no secrets, just identity SHA + name.
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Build (Release, universal)
+        # Signs with Developer ID Application + hardened runtime when
+        # the cert is available; otherwise produces an ad-hoc-signed
+        # universal binary (Gatekeeper warns first launch).
+        env:
+          SIGNED: ${{ steps.cert_check.outputs.available }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          if [[ "$SIGNED" == "true" ]]; then
+            SIGN_ARGS=(
+              CODE_SIGN_IDENTITY="Developer ID Application"
+              CODE_SIGN_STYLE=Manual
+              DEVELOPMENT_TEAM="$TEAM_ID"
+              OTHER_CODE_SIGN_FLAGS="--timestamp --options runtime"
+            )
+          else
+            SIGN_ARGS=(
+              CODE_SIGN_IDENTITY="-"
+              CODE_SIGNING_REQUIRED=NO
+              CODE_SIGNING_ALLOWED=NO
+            )
+          fi
           xcodebuild \
             -project Warboard.xcodeproj \
             -scheme Warboard \
@@ -54,10 +125,8 @@ jobs:
             -derivedDataPath build \
             ARCHS="arm64 x86_64" \
             ONLY_ACTIVE_ARCH=NO \
-            MARKETING_VERSION="${{ steps.version.outputs.VERSION }}" \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION="$VERSION" \
+            "${SIGN_ARGS[@]}" \
             build
 
       - name: Locate built .app
@@ -68,6 +137,12 @@ jobs:
             echo "Warboard.app not found"; exit 1
           fi
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Verify code signing
+        if: steps.cert_check.outputs.available == 'true'
+        run: |
+          codesign --verify --deep --strict --verbose=2 "${{ steps.locate.outputs.APP_PATH }}"
+          codesign --display --verbose=4 "${{ steps.locate.outputs.APP_PATH }}" 2>&1 | grep -E '(Authority|TeamIdentifier|Runtime)'
 
       - name: Stage DMG payload
         run: |
@@ -84,6 +159,44 @@ jobs:
             -ov -format UDZO \
             "$DMG_NAME"
           echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+
+      - name: Notarize DMG
+        # Submits the DMG to Apple's notary service and waits for the
+        # ticket (typically 2–5 min). On failure we dump the log so the
+        # cause shows up in CI output.
+        if: steps.cert_check.outputs.available == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set +e
+          xcrun notarytool submit "$DMG_NAME" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait \
+            --output-format json > notary.json
+          STATUS=$?
+          cat notary.json
+          if [[ $STATUS -ne 0 ]]; then
+            SUBMISSION_ID="$(python3 -c 'import json,sys; print(json.load(open("notary.json")).get("id",""))')"
+            if [[ -n "$SUBMISSION_ID" ]]; then
+              echo "Fetching notary log for $SUBMISSION_ID"
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_PASSWORD"
+            fi
+            exit $STATUS
+          fi
+
+      - name: Staple notarization ticket
+        # Embeds the ticket in the DMG so Gatekeeper validates offline.
+        if: steps.cert_check.outputs.available == 'true'
+        run: |
+          xcrun stapler staple "$DMG_NAME"
+          xcrun stapler validate "$DMG_NAME"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
@@ -116,6 +229,9 @@ jobs:
           fi
 
       - name: Sign DMG + update appcast.xml (Sparkle)
+        # Runs AFTER notarize+staple so the EdDSA signature covers the
+        # stapled DMG bytes (otherwise Sparkle's signature check would
+        # fail when the ticket is embedded post-sign).
         if: steps.sparkle_check.outputs.available == 'true'
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
@@ -143,3 +259,9 @@ jobs:
           git add appcast.xml
           git commit -m "ci: appcast — Warboard ${VERSION}" || true
           git push origin main
+
+      - name: Clean up signing keychain
+        # Always run so a failed build still removes the temp keychain.
+        if: always() && steps.cert_check.outputs.available == 'true'
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" || true
