@@ -1,0 +1,98 @@
+name: Build DMG
+
+# Triggers:
+#   - workflow_dispatch — manual builds
+#   - tag push v*.*.*  — also attaches DMG to the GitHub Release
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install xcodegen
+        # Generates Warboard.xcodeproj from project.yml so we don't have
+        # to commit the project file. Cached install — Homebrew already
+        # has xcodegen on the macOS runners.
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Resolve marketing version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="$(date +%Y%m%d-%H%M%S)-dev"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build (Release, universal)
+        # Code signing intentionally disabled — produces an unsigned
+        # universal binary. macOS Gatekeeper will warn first launch;
+        # users right-click → Open or run xattr -dr com.apple.quarantine.
+        run: |
+          xcodebuild \
+            -project Warboard.xcodeproj \
+            -scheme Warboard \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            MARKETING_VERSION="${{ steps.version.outputs.VERSION }}" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Locate built .app
+        id: locate
+        run: |
+          APP_PATH="$(find build/Build/Products/Release -type d -name 'Warboard.app' -print -quit)"
+          if [[ -z "$APP_PATH" ]]; then
+            echo "Warboard.app not found"; exit 1
+          fi
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Stage DMG payload
+        run: |
+          mkdir -p dmg-payload
+          cp -R "${{ steps.locate.outputs.APP_PATH }}" dmg-payload/
+          ln -s /Applications dmg-payload/Applications
+
+      - name: Build DMG
+        run: |
+          DMG_NAME="Warboard-${{ steps.version.outputs.VERSION }}.dmg"
+          hdiutil create \
+            -volname "Warboard ${{ steps.version.outputs.VERSION }}" \
+            -srcfolder dmg-payload \
+            -ov -format UDZO \
+            "$DMG_NAME"
+          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Warboard-${{ steps.version.outputs.VERSION }}-dmg
+          path: ${{ env.DMG_NAME }}
+          retention-days: 90
+
+      - name: Attach DMG to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DMG_NAME }}
+          generate_release_notes: true

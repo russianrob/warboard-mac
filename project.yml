@@ -1,0 +1,50 @@
+# xcodegen spec — `xcodegen generate` produces Warboard.xcodeproj from
+# this YAML so the project file isn't checked in. CI does this on every
+# build (see .github/workflows/build-dmg.yml).
+name: Warboard
+options:
+  bundleIdPrefix: com.tornwar
+  deploymentTarget:
+    macOS: "14.0"
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: "Manual"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+    SWIFT_VERSION: "5.9"
+    ENABLE_PREVIEWS: "YES"
+
+targets:
+  Warboard:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Warboard
+    info:
+      path: Sources/Warboard/Resources/Info.plist
+      properties:
+        CFBundleName: Warboard
+        CFBundleDisplayName: Warboard
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleIdentifier: com.tornwar.Warboard
+        # LSUIElement: false — standalone app appears in Dock + Cmd-Tab.
+        # Toggle to true if you ever want menu-bar-only mode.
+        LSUIElement: false
+        NSHighResolutionCapable: true
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
+        # We talk to api.torn.com (HTTPS) and the user-configured
+        # warboard URL (HTTPS by default); no exception domains needed.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tornwar.Warboard
+        ENABLE_HARDENED_RUNTIME: YES
+        # No app sandbox in v0.1 to keep first-build friction low; can
+        # add it once we wire keychain storage for the API key.
+        ENABLE_APP_SANDBOX: NO
