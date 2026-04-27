@@ -36,6 +36,12 @@ final class WarRoomViewModel: ObservableObject {
     /// Per-enemy releaseAtMs from the previous tick — drives the
     /// monotonic guard so a stale poll can't bump release times forward.
     private var lastReleaseAtMs: [String: Int64] = [:]
+    /// Chain-alert latches — only fire each threshold notification once
+    /// per chain "life" (cleared when chain count flips, mirrors the
+    /// userscript's chainAlertFired/chainPanicFired latches).
+    private var chainAlertFired = false
+    private var chainPanicFired = false
+    private var lastChainCountForAlerts: Int?
 
     init() { }
 
@@ -117,6 +123,50 @@ final class WarRoomViewModel: ObservableObject {
         travelInfo = await WarboardAPI.fetchTravelInfo(
             baseUrl: prefs.baseUrl, jwt: a.token, warId: merged.warId
         )
+        evaluateChainAlerts(prefs: prefs)
+    }
+
+    /// Mirrors the userscript's chain alert thresholds (60 s warning,
+    /// 30 s panic) — fires a macOS notification per threshold once per
+    /// chain "life," clears the latch when the count changes (new hit
+    /// → fresh alert window) or the timer recovers above 60 s.
+    private func evaluateChainAlerts(prefs: PrefsStore) {
+        guard prefs.notifyChain else { return }
+        guard case .active(let war) = state else { return }
+        let chain = poll?.chainCurrent ?? war.chainCurrent ?? 0
+        let to = (poll?.chainTimeout ?? war.chainTimeout) ?? 0
+        // Reset latches when count changes (new hit lands) or when the
+        // chain breaks (count → 0).
+        if lastChainCountForAlerts != chain {
+            chainAlertFired = false
+            chainPanicFired = false
+            lastChainCountForAlerts = chain
+        }
+        // Recover above 60 s — clear so a later dip retrigggers.
+        if to > 60 {
+            chainAlertFired = false
+            chainPanicFired = false
+        }
+        // Only alert once chain is genuine (≥10) so the script's "warmup"
+        // ticks don't spam notifications.
+        guard chain >= 10, to > 0 else { return }
+        if to <= 30 && !chainPanicFired {
+            chainPanicFired = true
+            NotificationManager.shared.fire(
+                title: "🚨 Chain dying — \(to)s!",
+                body: "Chain \(chain) about to break. Hit now.",
+                category: .chainPanic,
+                id: "war-\(war.warId)-c\(chain)"
+            )
+        } else if to <= 60 && !chainAlertFired {
+            chainAlertFired = true
+            NotificationManager.shared.fire(
+                title: "⚠️ Chain breaking",
+                body: "Chain \(chain) — \(to)s left. Attack soon.",
+                category: .chainBreaking,
+                id: "war-\(war.warId)-c\(chain)"
+            )
+        }
     }
 
     /// Fire a faction-wide shout — calls /api/broadcast. Server gates

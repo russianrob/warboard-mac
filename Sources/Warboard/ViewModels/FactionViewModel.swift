@@ -15,6 +15,11 @@ final class FactionViewModel: ObservableObject {
     private var prefs: PrefsStore?
     private var auth: AuthRepository?
     private var task: Task<Void, Never>?
+    /// IDs of vault requests we've already notified for. First tick is
+    /// observe-only (cold-start populates the seen set without firing
+    /// a flood of notifications for already-pending requests).
+    private var seenVaultIds: Set<String> = []
+    private var vaultColdStarted = false
 
     func bind(prefs: PrefsStore) {
         self.prefs = prefs
@@ -44,6 +49,29 @@ final class FactionViewModel: ObservableObject {
         vaultBalance = b
         if let a = await auth.ensureAuth() {
             members = await WarboardAPI.fetchFactionMemberBars(baseUrl: prefs.baseUrl, jwt: a.token)
+        }
+        notifyNewVaultRequests(prefs: prefs)
+    }
+
+    /// Diff against the seen set — fire one notification per newly-
+    /// observed vault request. Cold-start (first tick) just seeds the
+    /// set so a 50-pending-request faction doesn't get hammered.
+    private func notifyNewVaultRequests(prefs: PrefsStore) {
+        let currentIds = Set(vaultRequests.map(\.id))
+        defer {
+            seenVaultIds = currentIds
+            vaultColdStarted = true
+            NotificationManager.shared.setDockBadge(vaultRequests.isEmpty ? nil : vaultRequests.count)
+        }
+        guard vaultColdStarted, prefs.notifyVault else { return }
+        let fresh = vaultRequests.filter { !seenVaultIds.contains($0.id) }
+        for r in fresh {
+            NotificationManager.shared.fire(
+                title: "Vault request",
+                body: "\(r.requesterName) requested $\(formatMoney(r.amount))",
+                category: .vaultRequest,
+                id: r.id
+            )
         }
     }
 

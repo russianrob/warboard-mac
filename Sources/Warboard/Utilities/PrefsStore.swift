@@ -12,14 +12,28 @@ final class PrefsStore: ObservableObject {
     private static let kFactionId = "warboard.factionId"
     private static let kFactionName = "warboard.factionName"
     private static let kPlayerId = "warboard.playerId"
+    private static let kNotifyChain = "warboard.notify.chain"
+    private static let kNotifyVault = "warboard.notify.vault"
+    private static let kMenuBarChain = "warboard.menubar.chain"
 
     @Published var apiKey: String { didSet { defaults.set(apiKey, forKey: Self.kApiKey) } }
     @Published var baseUrl: String { didSet { defaults.set(baseUrl, forKey: Self.kBaseUrl) } }
+    /// macOS notifications opt-ins. Default ON for chain (admins want
+    /// to know when their chain is breaking) + vault (banker workflow).
+    @Published var notifyChain: Bool { didSet { defaults.set(notifyChain, forKey: Self.kNotifyChain) } }
+    @Published var notifyVault: Bool { didSet { defaults.set(notifyVault, forKey: Self.kNotifyVault) } }
+    /// Whether the menu-bar status item shows the live chain count.
+    @Published var menuBarChain: Bool { didSet { defaults.set(menuBarChain, forKey: Self.kMenuBarChain) } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.apiKey = defaults.string(forKey: Self.kApiKey) ?? ""
         self.baseUrl = defaults.string(forKey: Self.kBaseUrl) ?? "https://tornwar.com"
+        // Default ON for both notification categories on first run; user
+        // can untoggle per category in Settings.
+        self.notifyChain = defaults.object(forKey: Self.kNotifyChain) as? Bool ?? true
+        self.notifyVault = defaults.object(forKey: Self.kNotifyVault) as? Bool ?? true
+        self.menuBarChain = defaults.object(forKey: Self.kMenuBarChain) as? Bool ?? true
     }
 
     // JWT cache helpers — accessed by AuthRepository, not the UI.

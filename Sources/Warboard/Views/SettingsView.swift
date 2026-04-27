@@ -36,6 +36,15 @@ struct SettingsView: View {
                 .buttonStyle(.borderedProminent)
             }
 
+            Section("Notifications") {
+                Toggle("Chain-breaking alerts (60 s + 30 s thresholds)", isOn: $prefs.notifyChain)
+                Toggle("New vault request alerts", isOn: $prefs.notifyVault)
+                Text("First-time triggers a macOS permission prompt. Silent if denied — toggle in System Settings → Notifications.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Section("Menu bar") {
+                Toggle("Show chain count in menu bar", isOn: $prefs.menuBarChain)
+            }
             Section("Updates") {
                 let current = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
                 HStack {
