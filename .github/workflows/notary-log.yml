@@ -1,0 +1,28 @@
+name: Notary log
+# Fetches the rejection / acceptance log for a notarytool submission ID.
+# Use when a build's notarization came back "Invalid" so we can see what
+# Apple flagged.
+
+on:
+  workflow_dispatch:
+    inputs:
+      submission_id:
+        description: "notarytool submission UUID"
+        required: true
+        type: string
+
+jobs:
+  fetch:
+    runs-on: macos-latest
+    steps:
+      - name: Fetch log
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          SUBMISSION_ID: ${{ inputs.submission_id }}
+        run: |
+          xcrun notarytool log "$SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
