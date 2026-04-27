@@ -295,32 +295,45 @@ jobs:
         # Runs AFTER notarize+staple so the EdDSA signature covers the
         # stapled DMG bytes (otherwise Sparkle's signature check would
         # fail when the ticket is embedded post-sign).
+        #
+        # The build dirties the working tree (xcodegen rewrites
+        # Info.plist with the marketing version), so we sign the DMG
+        # first (before any git operations), then operate on a clean
+        # clone in /tmp where we can modify appcast.xml without
+        # fighting the workspace's dirty state.
         if: steps.sparkle_check.outputs.available == 'true'
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           VERSION: ${{ steps.version.outputs.VERSION }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 -m pip install --quiet --user --break-system-packages cryptography
           ED_SIGNATURE="$(python3 scripts/sign_dmg.py "$DMG_NAME")"
           DMG_LENGTH="$(stat -f %z "$DMG_NAME")"
           DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/$(basename "$DMG_NAME")"
-          # Pull current main branch so we modify the live appcast.xml
-          # rather than the tag's snapshot — Sparkle clients fetch from
-          # the main branch via raw.githubusercontent.com.
-          git fetch origin main --depth=1
-          git checkout origin/main -- appcast.xml || true
+          SCRIPT_PATH="$GITHUB_WORKSPACE/scripts/build_appcast.py"
+
+          # Clean clone of main — avoids the dirty Info.plist from the
+          # build, and lets us push without rebase gymnastics.
+          REPO_DIR="$RUNNER_TEMP/appcast-repo"
+          rm -rf "$REPO_DIR"
+          git clone --depth=1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "$REPO_DIR"
+          cd "$REPO_DIR"
+
           ED_SIGNATURE="$ED_SIGNATURE" DMG_URL="$DMG_URL" \
             DMG_LENGTH="$DMG_LENGTH" RELEASE_NOTES="${VERSION} release." \
-            python3 scripts/build_appcast.py
+            python3 "$SCRIPT_PATH"
+
           git config user.email "robert.n.hay@gmail.com"
           git config user.name  "RussianRob"
-          git fetch origin main
-          git checkout main
-          mv appcast.xml /tmp/appcast.xml
-          git pull --rebase
-          mv /tmp/appcast.xml appcast.xml
           git add appcast.xml
-          git commit -m "ci: appcast — Warboard ${VERSION}" || true
+          if git diff --cached --quiet; then
+            echo "appcast.xml unchanged — nothing to commit"
+            exit 0
+          fi
+          git commit -m "ci: appcast — Warboard ${VERSION}"
           git push origin main
 
       - name: Clean up signing keychain
