@@ -9,9 +9,16 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(SidebarItem.allCases, selection: $selection) { item in
-                Label(item.label, systemImage: item.icon)
-                    .tag(item as SidebarItem?)
+            // NavigationLink(value:) is the value-based navigation
+            // pattern NavigationSplitView expects on macOS 13+. The
+            // earlier `.tag()` form rendered the row but didn't wire
+            // up click → selection on the macOS sidebar.
+            List(selection: $selection) {
+                ForEach(SidebarItem.allCases) { item in
+                    NavigationLink(value: item) {
+                        Label(item.label, systemImage: item.icon)
+                    }
+                }
             }
             .navigationTitle("Warboard")
             .frame(minWidth: 180)

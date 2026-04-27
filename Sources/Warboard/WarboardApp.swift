@@ -7,17 +7,29 @@ import SwiftUI
 @main
 struct WarboardApp: App {
     @StateObject private var prefs = PrefsStore()
+    @StateObject private var updates = UpdateViewModel()
 
     var body: some Scene {
         WindowGroup("Warboard") {
             ContentView()
                 .environmentObject(prefs)
+                .environmentObject(updates)
                 .frame(minWidth: 720, minHeight: 600)
+                .task {
+                    // Auto-checks for updates on launch + every hour.
+                    // Surfaced in Settings via a card; harmless when
+                    // already up to date.
+                    updates.start()
+                }
         }
         .windowResizability(.contentSize)
         .commands {
-            // Hide the default "New Window" menu — single-window app.
             CommandGroup(replacing: .newItem) { }
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    Task { await updates.checkNow() }
+                }
+            }
         }
     }
 }
