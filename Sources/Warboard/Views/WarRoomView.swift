@@ -1,16 +1,11 @@
 import SwiftUI
+import AppKit  // NSWorkspace.shared.open
 
 struct WarRoomView: View {
     @EnvironmentObject private var prefs: PrefsStore
-    @StateObject private var vm: WarRoomViewModel
+    @StateObject private var vm = WarRoomViewModel()
     @State private var nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-
-    init() {
-        // Need prefs at init time; SwiftUI doesn't expose @EnvironmentObject
-        // until body, so we route through a placeholder + assign in onAppear.
-        _vm = StateObject(wrappedValue: WarRoomViewModel(prefs: PrefsStore()))
-    }
 
     var body: some View {
         ZStack {
@@ -22,9 +17,13 @@ struct WarRoomView: View {
             case .noWar:
                 MessageView(icon: "shield.slash", text: "No active war.")
             case .active(let war):
+                // Bind the target parameter explicitly — `$0` inside
+                // `Task { … }` would otherwise resolve to the Task
+                // closure (which has no params), not the outer
+                // `(EnemyTarget) -> Void` we're satisfying.
                 WarBody(war: war, poll: vm.poll, nowMs: nowMs,
-                        onCall: { Task { await vm.call($0) } },
-                        onUncall: { Task { await vm.uncall($0) } })
+                        onCall:   { target in Task { await vm.call(target) } },
+                        onUncall: { target in Task { await vm.uncall(target) } })
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -37,6 +36,7 @@ struct WarRoomView: View {
         }
         .navigationTitle("War Room")
         .onAppear {
+            vm.bind(prefs: prefs)
             vm.start()
         }
         .onDisappear { vm.stop() }

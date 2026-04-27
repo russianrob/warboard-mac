@@ -14,14 +14,20 @@ final class WarRoomViewModel: ObservableObject {
     @Published private(set) var poll: WarPoll?
     @Published private(set) var lastPolledAt: Date?
 
-    private let prefs: PrefsStore
-    private let auth: AuthRepository
+    /// Bound at .task time from the View — see `bind(prefs:)`. The VM
+    /// can't take prefs at init because @StateObject is constructed
+    /// before @EnvironmentObject is available. Until binding lands the
+    /// VM stays in the .loading state and the polling loop is a no-op.
+    private var prefs: PrefsStore?
+    private var auth: AuthRepository?
     private var task: Task<Void, Never>?
     /// Per-enemy releaseAtMs from the previous tick — drives the
     /// monotonic guard so a stale poll can't bump release times forward.
     private var lastReleaseAtMs: [String: Int64] = [:]
 
-    init(prefs: PrefsStore) {
+    init() { }
+
+    func bind(prefs: PrefsStore) {
         self.prefs = prefs
         self.auth = AuthRepository(prefs: prefs)
     }
@@ -53,9 +59,10 @@ final class WarRoomViewModel: ObservableObject {
 
     private func callTarget(_ target: EnemyTarget, action: String) async {
         guard case .active(let war) = state,
-              let auth = await auth.ensureAuth() else { return }
+              let prefs = prefs, let auth = auth,
+              let a = await auth.ensureAuth() else { return }
         _ = await WarboardAPI.callTarget(
-            baseUrl: prefs.baseUrl, jwt: auth.token,
+            baseUrl: prefs.baseUrl, jwt: a.token,
             warId: war.warId, action: action,
             targetId: target.id, targetName: target.name
         )
@@ -63,6 +70,7 @@ final class WarRoomViewModel: ObservableObject {
     }
 
     private func tick() async {
+        guard let prefs = prefs, let auth = auth else { return }
         if prefs.apiKey.isEmpty { state = .noKey; return }
         guard let a = await auth.ensureAuth() else { state = .noKey; return }
         let wars = await WarboardAPI.fetchWars(
