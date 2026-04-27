@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Warboard</title>
+    <link>https://github.com/russianrob/warboard-mac</link>
+    <description>Warboard for Mac — auto-update feed.</description>
+    <language>en</language>
+    <item>
+      <title>Warboard 0.5.5</title>
+      <pubDate>Mon, 27 Apr 2026 11:26:33 +0000</pubDate>
+      <sparkle:version>0.5.5</sparkle:version>
+      <sparkle:shortVersionString>0.5.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[0.5.5 release.]]></description>
+      <enclosure url="https://github.com/russianrob/warboard-mac/releases/download/v0.5.5/Warboard-0.5.5.dmg"
+                 length="2628230"
+                 type="application/octet-stream"
+                 sparkle:edSignature="P8YrZOJ22SdR+/E/dmf9RqiE71YtMWpM1+sNN82usBBqRw06kIGxl8+oIyINdkb27gcuXTDULiaWSSTqCMKPDg=="/>
+    </item>
+  </channel>
+</rss>
