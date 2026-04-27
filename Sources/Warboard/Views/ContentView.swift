@@ -26,7 +26,7 @@ struct ContentView: View {
             switch selection {
             case .status?:   DashboardView()
             case .war?:      WarRoomView()
-            case .faction?:  FactionPlaceholderView()
+            case .faction?:  FactionView()
             case .settings?: SettingsView()
             case nil:        Text("Select a section")
                 .foregroundStyle(.secondary)
@@ -56,15 +56,3 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     }
 }
 
-/// Stub for v0.1 — real Faction tab (Vault + Members) ships in v0.2.
-struct FactionPlaceholderView: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "person.3.fill").font(.system(size: 48))
-                .foregroundStyle(.tertiary)
-            Text("Faction tab coming in v0.2")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}

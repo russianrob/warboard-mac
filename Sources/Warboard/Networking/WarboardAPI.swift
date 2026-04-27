@@ -93,6 +93,197 @@ enum WarboardAPI {
         }
     }
 
+    // MARK: Faction — vault + members
+
+    /// GET /api/oc/vault-requests — pending vault requests for our
+    /// faction. Same endpoint the Android client uses.
+    static func fetchVaultRequests(baseUrl: String, apiKey: String) async -> [VaultRequest] {
+        guard !apiKey.isEmpty,
+              let url = URL(string: baseUrl.trimmedSlash + "/api/oc/vault-requests?key=\(apiKey)")
+        else { return [] }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            let arr = root["requests"] as? [[String: Any]] ?? []
+            return arr.map { o in
+                VaultRequest(
+                    id:            (o["id"] as? String) ?? "",
+                    requesterId:   (o["requesterId"] as? String) ?? "",
+                    requesterName: (o["requesterName"] as? String) ?? "",
+                    amount:        (o["amount"] as? Int64) ?? Int64((o["amount"] as? Int) ?? 0),
+                    target:        (o["target"] as? String) ?? "both",
+                    createdAt:     (o["createdAt"] as? Int64) ?? Int64((o["createdAt"] as? Int) ?? 0)
+                )
+            }
+        } catch { return [] }
+    }
+
+    /// GET /api/oc/vault-balance — faction vault balance ($).
+    static func fetchVaultBalance(baseUrl: String, apiKey: String) async -> Int64 {
+        guard !apiKey.isEmpty,
+              let url = URL(string: baseUrl.trimmedSlash + "/api/oc/vault-balance?key=\(apiKey)")
+        else { return 0 }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            return (root["balance"] as? Int64) ?? Int64((root["balance"] as? Int) ?? 0)
+        } catch { return 0 }
+    }
+
+    /// POST /api/oc/vault-request — submit a request. Returns the new
+    /// request id, or nil on failure (caps exceeded, no balance, etc.).
+    @discardableResult
+    static func submitVaultRequest(
+        baseUrl: String, apiKey: String, amount: Int64, target: String
+    ) async -> String? {
+        guard let url = URL(string: baseUrl.trimmedSlash + "/api/oc/vault-request") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["key": apiKey, "amount": amount, "target": target]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            return (root["request"] as? [String: Any])?["id"] as? String
+        } catch { return nil }
+    }
+
+    @discardableResult
+    static func cancelVaultRequest(baseUrl: String, apiKey: String, id: String) async -> Bool {
+        guard let encId = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: baseUrl.trimmedSlash + "/api/oc/vault-request/\(encId)?key=\(apiKey)")
+        else { return false }
+        var req = URLRequest(url: url); req.httpMethod = "DELETE"
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            return (resp as? HTTPURLResponse)?.statusCode == 200
+        } catch { return false }
+    }
+
+    @discardableResult
+    static func claimVaultRequest(baseUrl: String, apiKey: String, id: String) async -> Bool {
+        guard let encId = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: baseUrl.trimmedSlash + "/api/oc/vault-request/\(encId)/claim")
+        else { return false }
+        var req = URLRequest(url: url); req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["key": apiKey])
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            return (resp as? HTTPURLResponse)?.statusCode == 200
+        } catch { return false }
+    }
+
+    /// GET /api/faction/bars — full faction member-bars snapshot.
+    static func fetchFactionMemberBars(baseUrl: String, jwt: String) async -> [MemberBars] {
+        guard let url = URL(string: baseUrl.trimmedSlash + "/api/faction/bars") else { return [] }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            let mb = root["memberBars"] as? [String: [String: Any]] ?? [:]
+            return mb.map { (pid, entry) in
+                let bars = entry["bars"] as? [String: Any] ?? [:]
+                let cd = entry["cooldowns"] as? [String: Any] ?? [:]
+                func tuple(_ raw: Any?) -> [Int] {
+                    let o = (raw as? [String: Any]) ?? [:]
+                    return [(o["current"] as? Int) ?? 0, (o["maximum"] as? Int) ?? 100]
+                }
+                return MemberBars(
+                    playerId: pid,
+                    playerName: (entry["name"] as? String) ?? pid,
+                    energy: tuple(bars["energy"]),
+                    nerve:  tuple(bars["nerve"]),
+                    happy:  tuple(bars["happy"]),
+                    life:   tuple(bars["life"]),
+                    drugSec:    Int64((cd["drug"]    as? Int) ?? 0),
+                    medicalSec: Int64((cd["medical"] as? Int) ?? 0),
+                    boosterSec: Int64((cd["booster"] as? Int) ?? 0),
+                    updatedAt:  (entry["updatedAt"] as? Int64) ?? Int64((entry["updatedAt"] as? Int) ?? 0)
+                )
+            }.sorted { $0.updatedAt > $1.updatedAt }
+        } catch { return [] }
+    }
+
+    // MARK: War extras — enemy stats + travel info
+
+    /// GET /api/war/<warId>/enemy-stats — FFScouter battle-stat
+    /// estimates per enemy. Server-cached 30 min; we just consume.
+    static func fetchEnemyStats(baseUrl: String, jwt: String, warId: String) async -> [String: Int64] {
+        guard let encoded = warId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: baseUrl.trimmedSlash + "/api/war/\(encoded)/enemy-stats") else { return [:] }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            let est = root["estimates"] as? [String: Any] ?? [:]
+            var out: [String: Int64] = [:]
+            for (pid, v) in est {
+                if let n = v as? Int { out[pid] = Int64(n) }
+                else if let n = v as? Int64 { out[pid] = n }
+            }
+            return out
+        } catch { return [:] }
+    }
+
+    /// GET /api/war/<warId>/travel-info — FFScouter player-flights
+    /// wrapper for traveling enemies (live landing-time countdowns).
+    static func fetchTravelInfo(baseUrl: String, jwt: String, warId: String) async -> [String: TravelInfo] {
+        guard let encoded = warId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: baseUrl.trimmedSlash + "/api/war/\(encoded)/travel-info") else { return [:] }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            let travels = root["travels"] as? [String: [String: Any]] ?? [:]
+            var out: [String: TravelInfo] = [:]
+            for (pid, o) in travels {
+                out[pid] = TravelInfo(
+                    landingAt: (o["landingAt"] as? Int64) ?? Int64((o["landingAt"] as? Int) ?? 0),
+                    destination: (o["destination"] as? String) ?? "",
+                    returning: (o["returning"] as? Bool) ?? false,
+                    method: (o["method"] as? String) ?? ""
+                )
+            }
+            return out
+        } catch { return [:] }
+    }
+
+    // MARK: Shout
+
+    enum BroadcastResult: Equatable {
+        case ok
+        case error(String)
+    }
+
+    /// POST /api/broadcast — fire a faction-wide shout. Server gates
+    /// on leader/banker role; non-leaders get a clear error message.
+    static func sendBroadcast(
+        baseUrl: String, jwt: String, warId: String, message: String, type: String = "warning"
+    ) async -> BroadcastResult {
+        guard let url = URL(string: baseUrl.trimmedSlash + "/api/broadcast") else {
+            return .error("Bad URL")
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        let body: [String: Any] = ["warId": warId, "message": message, "type": type]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            if (resp as? HTTPURLResponse)?.statusCode == 200 { return .ok }
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return .error((root?["error"] as? String) ?? "HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0)")
+        } catch {
+            return .error(error.localizedDescription)
+        }
+    }
+
     // MARK: Scout report + heatmap (War sub-tabs)
 
     /// POST /api/war/<warId>/scout-report — server runs analyzeWarReport

@@ -19,6 +19,12 @@ final class WarRoomViewModel: ObservableObject {
     /// Both faction heatmaps. Refreshed each war-poll tick.
     @Published private(set) var ourHeatmap:  [Int: [Int: HeatmapCell]] = [:]
     @Published private(set) var theirHeatmap: [Int: [Int: HeatmapCell]] = [:]
+    /// FFScouter battle-stat estimates per enemy id (server-cached 30 min).
+    @Published private(set) var enemyStats: [String: Int64] = [:]
+    /// FFS player-flights data per traveling enemy.
+    @Published private(set) var travelInfo: [String: TravelInfo] = [:]
+    /// Last shout result — nil = no shout sent yet, .ok = success snackbar.
+    @Published var shoutResult: String?
 
     /// Bound at .task time from the View — see `bind(prefs:)`. The VM
     /// can't take prefs at init because @StateObject is constructed
@@ -100,6 +106,34 @@ final class WarRoomViewModel: ObservableObject {
             theirHeatmap = await WarboardAPI.fetchHeatmap(
                 baseUrl: prefs.baseUrl, jwt: a.token, factionId: merged.enemyFactionId
             )
+        }
+        // Enemy stats — fetch once per war (server-cached). Travel info
+        // refreshes every tick so countdowns stay accurate near landing.
+        if enemyStats.isEmpty {
+            enemyStats = await WarboardAPI.fetchEnemyStats(
+                baseUrl: prefs.baseUrl, jwt: a.token, warId: merged.warId
+            )
+        }
+        travelInfo = await WarboardAPI.fetchTravelInfo(
+            baseUrl: prefs.baseUrl, jwt: a.token, warId: merged.warId
+        )
+    }
+
+    /// Fire a faction-wide shout — calls /api/broadcast. Server gates
+    /// on leader/banker; non-leaders get the rejection in shoutResult.
+    func sendShout(_ message: String) {
+        Task {
+            guard let prefs = prefs, let auth = auth,
+                  case .active(let war) = state,
+                  let a = await auth.ensureAuth() else { return }
+            let result = await WarboardAPI.sendBroadcast(
+                baseUrl: prefs.baseUrl, jwt: a.token,
+                warId: war.warId, message: message
+            )
+            switch result {
+            case .ok:                shoutResult = "Shout sent"
+            case .error(let msg):    shoutResult = "Shout failed: \(msg)"
+            }
         }
     }
 

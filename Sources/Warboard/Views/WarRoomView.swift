@@ -14,6 +14,8 @@ struct WarRoomView: View {
     @StateObject private var vm = WarRoomViewModel()
     @State private var nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     @State private var subTab: WarSubTab = .targets
+    @State private var showShout = false
+    @State private var shoutText = ""
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -35,6 +37,8 @@ struct WarRoomView: View {
                 switch subTab {
                 case .targets:
                     WarBody(war: war, poll: vm.poll, nowMs: nowMs,
+                            enemyStats: vm.enemyStats,
+                            travelInfo: vm.travelInfo,
                             onCall:   { target in Task { await vm.call(target) } },
                             onUncall: { target in Task { await vm.uncall(target) } })
                 case .report:
@@ -48,10 +52,30 @@ struct WarRoomView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Button(action: { showShout = true }) {
+                    Image(systemName: "megaphone.fill")
+                }.help("Shout to faction")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button(action: { vm.refresh() }) {
                     Image(systemName: "arrow.clockwise")
                 }.help("Refresh")
             }
+        }
+        .sheet(isPresented: $showShout) {
+            ShoutSheet(text: $shoutText, onSend: {
+                if !shoutText.trimmingCharacters(in: .whitespaces).isEmpty {
+                    vm.sendShout(shoutText.trimmingCharacters(in: .whitespaces))
+                    shoutText = ""
+                }
+                showShout = false
+            }, onCancel: { showShout = false })
+        }
+        .alert(item: Binding(
+            get: { vm.shoutResult.map { IdString(value: $0) } },
+            set: { _ in vm.shoutResult = nil })
+        ) { msg in
+            Alert(title: Text(msg.value))
         }
         .navigationTitle("War Room")
         .onAppear {
@@ -87,6 +111,8 @@ private struct WarBody: View {
     let war: WarSnapshot
     let poll: WarPoll?
     let nowMs: Int64
+    let enemyStats: [String: Int64]
+    let travelInfo: [String: TravelInfo]
     let onCall: (EnemyTarget) -> Void
     let onUncall: (EnemyTarget) -> Void
 
@@ -95,7 +121,9 @@ private struct WarBody: View {
             HeaderCard(war: war, poll: poll, nowMs: nowMs)
                 .padding(12)
             Divider()
-            TargetList(war: war, nowMs: nowMs, onCall: onCall, onUncall: onUncall)
+            TargetList(war: war, nowMs: nowMs,
+                       enemyStats: enemyStats, travelInfo: travelInfo,
+                       onCall: onCall, onUncall: onUncall)
         }
     }
 }
@@ -174,6 +202,8 @@ private struct ChainBar: View {
 private struct TargetList: View {
     let war: WarSnapshot
     let nowMs: Int64
+    let enemyStats: [String: Int64]
+    let travelInfo: [String: TravelInfo]
     let onCall: (EnemyTarget) -> Void
     let onUncall: (EnemyTarget) -> Void
 
@@ -192,7 +222,11 @@ private struct TargetList: View {
             (priority(lhs), lhs.untilSec) < (priority(rhs), rhs.untilSec)
         }
         List(sorted) { t in
-            TargetRow(target: t, onCall: onCall, onUncall: onUncall)
+            TargetRow(target: t,
+                      stats: enemyStats[t.id],
+                      travel: travelInfo[t.id],
+                      nowMs: nowMs,
+                      onCall: onCall, onUncall: onUncall)
                 .listRowSeparator(.hidden)
         }
         .listStyle(.plain)
@@ -214,6 +248,9 @@ private struct TargetList: View {
 
 private struct TargetRow: View {
     let target: EnemyTarget
+    let stats: Int64?
+    let travel: TravelInfo?
+    let nowMs: Int64
     let onCall: (EnemyTarget) -> Void
     let onUncall: (EnemyTarget) -> Void
 
@@ -222,11 +259,13 @@ private struct TargetRow: View {
             Circle().fill(activityColor).frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 2) {
                 Text(target.name).font(.subheadline.weight(.medium))
-                Text("L\(target.level)")
-                    .font(.caption2).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text("L\(target.level)").font(.caption2).foregroundStyle(.secondary)
+                    if let s = stats { StatChip(total: s) }
+                }
             }
             Spacer()
-            StatusChip(target: target)
+            StatusChip(target: target, travel: travel, nowMs: nowMs)
             if let caller = target.calledBy {
                 Button("by \(caller)") { onUncall(target) }
                     .buttonStyle(.bordered).controlSize(.small)
@@ -261,6 +300,9 @@ private struct TargetRow: View {
 
 private struct StatusChip: View {
     let target: EnemyTarget
+    let travel: TravelInfo?
+    let nowMs: Int64
+
     var body: some View {
         switch target.status.lowercased() {
         case "okay", "ok":
@@ -270,11 +312,20 @@ private struct StatusChip: View {
         case "jail":
             chip(icon: "🔒", text: target.untilSec > 0 ? formatHms(Int(target.untilSec)) : "out", color: .purple)
         case "traveling":
-            let country = countryFromDescription(target.description)
-            let arrow = target.description.hasPrefix("Returning") ? "←" : "→"
-            chip(icon: "✈", text: "\(arrow) \(country)", color: .cyan)
+            let country = travel?.destination.nilIfBlank ?? countryFromDescription(target.description)
+            let arrow = (travel?.returning ?? target.description.hasPrefix("Returning")) ? "←" : "→"
+            // FFScouter landing time → live countdown when available.
+            let timer: String = {
+                if let landing = travel?.landingAt, landing > 0 {
+                    let remaining = max(0, landing - nowMs / 1000)
+                    return remaining > 0 ? " \(formatHms(Int(remaining)))" : ""
+                }
+                return ""
+            }()
+            chip(icon: "✈", text: "\(arrow) \(country)\(timer)", color: .cyan)
         case "abroad":
-            chip(icon: "🛬", text: countryFromAbroad(target.description), color: .cyan)
+            let country = travel?.destination.nilIfBlank ?? countryFromAbroad(target.description)
+            chip(icon: "🛬", text: country, color: .cyan)
         default:
             chip(icon: "", text: target.status, color: .secondary)
         }
@@ -639,6 +690,67 @@ struct HeatmapTab: View {
         }
         .padding(16)
     }
+}
+
+// MARK: - Misc small components
+
+struct StatChip: View {
+    let total: Int64
+    var body: some View {
+        let (tier, color) = StatChip.tier(total)
+        Text("\(tier) \(StatChip.fmt(total))")
+            .font(.caption2.bold())
+            .foregroundColor(color)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.4)))
+    }
+    static func tier(_ n: Int64) -> (String, Color) {
+        if n >= 3_000_000_000 { return ("S", .red) }
+        if n >= 1_000_000_000 { return ("A", .yellow) }
+        if n >=   500_000_000 { return ("B", .green) }
+        return ("C", .gray)
+    }
+    static func fmt(_ n: Int64) -> String {
+        if n >= 1_000_000_000 { return String(format: "%.1fB", Double(n) / 1_000_000_000) }
+        if n >= 1_000_000     { return String(format: "%.0fM", Double(n) / 1_000_000) }
+        if n >= 1_000         { return String(format: "%.0fK", Double(n) / 1_000) }
+        return "\(n)"
+    }
+}
+
+struct IdString: Identifiable {
+    let value: String
+    var id: String { value }
+}
+
+struct ShoutSheet: View {
+    @Binding var text: String
+    let onSend: () -> Void
+    let onCancel: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Faction shout").font(.title3.bold())
+            Text("Leaders + bankers only. Sends a toast + push notification to every member subscribed to this war.")
+                .font(.caption).foregroundStyle(.secondary)
+            TextEditor(text: $text)
+                .frame(minHeight: 90)
+                .border(Color.secondary.opacity(0.3))
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button("Send", action: onSend)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding()
+        .frame(width: 420)
+    }
+}
+
+extension String {
+    var nilIfBlank: String? { trimmingCharacters(in: .whitespaces).isEmpty ? nil : self }
 }
 
 // MARK: - Helpers
