@@ -300,7 +300,7 @@ jobs:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
-          python3 -m pip install --quiet --user cryptography
+          python3 -m pip install --quiet --user --break-system-packages cryptography
           ED_SIGNATURE="$(python3 scripts/sign_dmg.py "$DMG_NAME")"
           DMG_LENGTH="$(stat -f %z "$DMG_NAME")"
           DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/$(basename "$DMG_NAME")"
