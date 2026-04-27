@@ -7,7 +7,7 @@ import SwiftUI
 @main
 struct WarboardApp: App {
     @StateObject private var prefs = PrefsStore()
-    @StateObject private var updates = UpdateViewModel()
+    @StateObject private var sparkle = SparkleUpdater.shared
     /// Menu-bar status item runs its own lightweight chain ticker —
     /// independent of the main War Room view's polling loop so the
     /// label stays live even when the window is closed/hidden.
@@ -23,10 +23,9 @@ struct WarboardApp: App {
         WindowGroup("Warboard") {
             ContentView()
                 .environmentObject(prefs)
-                .environmentObject(updates)
+                .environmentObject(sparkle)
                 .frame(minWidth: 720, minHeight: 600)
                 .task {
-                    updates.start()
                     menuChain.start()
                 }
         }
@@ -34,9 +33,7 @@ struct WarboardApp: App {
         .commands {
             CommandGroup(replacing: .newItem) { }
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") {
-                    Task { await updates.checkNow() }
-                }
+                Button("Check for Updates…") { sparkle.checkForUpdates() }
             }
         }
 

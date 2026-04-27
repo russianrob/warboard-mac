@@ -34,17 +34,24 @@ struct MenuBarChainPopover: View {
                     if ticker.timeoutDeadlineMs <= 0 { return 0 }
                     return max(0, Int((ticker.timeoutDeadlineMs - nowMs) / 1000))
                 }()
+                let cdRemaining: Int = {
+                    if ticker.cooldownDeadlineMs <= 0 { return 0 }
+                    return max(0, Int((ticker.cooldownDeadlineMs - nowMs) / 1000))
+                }()
                 let color: Color = {
                     if ticker.chainCurrent == 0 { return .secondary }
-                    if remaining <= 30 { return .red }
-                    if remaining <= 60 { return .orange }
+                    if cdRemaining > 0         { return .secondary }
+                    if remaining <= 30         { return .red }
+                    if remaining <= 60         { return .orange }
                     return .green
                 }()
                 HStack {
                     Text("Chain \(ticker.chainCurrent)/\(ticker.nextMilestone)")
                         .font(.headline).foregroundColor(color)
                     Spacer()
-                    if remaining > 0 {
+                    if cdRemaining > 0 {
+                        Text("cd \(formatDur(cdRemaining))").foregroundStyle(.secondary).font(.subheadline.monospacedDigit())
+                    } else if remaining > 0 {
                         Text(formatDur(remaining)).foregroundColor(color).font(.subheadline.monospacedDigit())
                     } else if ticker.chainCurrent == 0 {
                         Text("no chain").foregroundStyle(.secondary).font(.caption)

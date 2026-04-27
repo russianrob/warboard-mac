@@ -12,6 +12,8 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    permissions:
+      contents: write   # appcast.xml commit + GitHub Release attachment
 
     steps:
       - name: Checkout
@@ -91,8 +93,53 @@ jobs:
           retention-days: 90
 
       - name: Attach DMG to GitHub Release
+        id: release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.DMG_NAME }}
           generate_release_notes: true
+
+      - name: Detect Sparkle signing key
+        # Secret access isn't allowed in `if:` conditions; check via
+        # env into a step output, then guard the next step on that.
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: sparkle_check
+        env:
+          KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$KEY" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::SPARKLE_PRIVATE_KEY not set — skipping appcast update"
+          fi
+
+      - name: Sign DMG + update appcast.xml (Sparkle)
+        if: steps.sparkle_check.outputs.available == 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          python3 -m pip install --quiet --user cryptography
+          ED_SIGNATURE="$(python3 scripts/sign_dmg.py "$DMG_NAME")"
+          DMG_LENGTH="$(stat -f %z "$DMG_NAME")"
+          DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/$(basename "$DMG_NAME")"
+          # Pull current main branch so we modify the live appcast.xml
+          # rather than the tag's snapshot — Sparkle clients fetch from
+          # the main branch via raw.githubusercontent.com.
+          git fetch origin main --depth=1
+          git checkout origin/main -- appcast.xml || true
+          ED_SIGNATURE="$ED_SIGNATURE" DMG_URL="$DMG_URL" \
+            DMG_LENGTH="$DMG_LENGTH" RELEASE_NOTES="${VERSION} release." \
+            python3 scripts/build_appcast.py
+          git config user.email "robert.n.hay@gmail.com"
+          git config user.name  "RussianRob"
+          git fetch origin main
+          git checkout main
+          mv appcast.xml /tmp/appcast.xml
+          git pull --rebase
+          mv /tmp/appcast.xml appcast.xml
+          git add appcast.xml
+          git commit -m "ci: appcast — Warboard ${VERSION}" || true
+          git push origin main

@@ -32,6 +32,36 @@ enum TornAPI {
         let error: String?
     }
 
+    struct FactionChain: Equatable {
+        let current: Int
+        let max: Int
+        let timeout: Int64        // seconds until break
+        let cooldown: Int64       // seconds of post-break wait
+        let modifier: Double      // respect multiplier at current count
+    }
+
+    /// `/v2/faction?selections=chain` — direct Torn fetch with the
+    /// user's API key, same path the Android client uses for the chain
+    /// bar. Bypasses warboard so the chain ticker works even when the
+    /// warboard server is down or rate-limiting us.
+    static func fetchFactionChain(apiKey: String) async -> FactionChain? {
+        guard !apiKey.isEmpty,
+              let url = URL(string: "\(base)/v2/faction?selections=chain&key=\(apiKey)")
+        else { return nil }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            guard let c = root["chain"] as? [String: Any] else { return nil }
+            return FactionChain(
+                current:  (c["current"]  as? Int) ?? 0,
+                max:      (c["max"]      as? Int) ?? 0,
+                timeout:  (c["timeout"]  as? Int64) ?? Int64((c["timeout"]  as? Int) ?? 0),
+                cooldown: (c["cooldown"] as? Int64) ?? Int64((c["cooldown"] as? Int) ?? 0),
+                modifier: (c["modifier"] as? Double) ?? Double((c["modifier"] as? Int) ?? 1)
+            )
+        } catch { return nil }
+    }
+
     /// `/v2/user?selections=basic,bars,cooldowns,profile,travel` →
     /// the everything-the-Status-tab-needs payload.
     static func fetchDashboard(apiKey: String) async -> DashboardSnapshot? {

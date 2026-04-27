@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var prefs: PrefsStore
-    @EnvironmentObject private var updates: UpdateViewModel
+    @EnvironmentObject private var sparkle: SparkleUpdater
     @State private var apiKey: String = ""
     @State private var baseUrl: String = ""
     @State private var savedToast: String?
@@ -49,33 +49,16 @@ struct SettingsView: View {
                 let current = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Installed: v\(current)")
-                            .font(.subheadline)
-                        if let avail = updates.available {
-                            Text("Update available: \(avail.tagName)")
-                                .foregroundStyle(.green)
-                                .font(.caption.bold())
-                        } else if let last = updates.lastCheckedAt {
-                            Text("Up to date — last checked \(last.formatted(date: .omitted, time: .shortened))")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                        } else {
-                            Text("Update status pending…")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                        }
+                        Text("Installed: v\(current)").font(.subheadline)
+                        Text("Sparkle 2.x — installs in place from the GitHub appcast.")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if updates.available != nil {
-                        Button("Download") { updates.openReleasePage() }
-                            .buttonStyle(.borderedProminent)
-                    } else {
-                        Button(updates.checking ? "Checking…" : "Check now") {
-                            Task { await updates.checkNow() }
-                        }
-                        .disabled(updates.checking)
-                    }
+                    Button("Check now") { sparkle.checkForUpdates() }
+                        .buttonStyle(.borderedProminent)
                 }
+                Toggle("Check automatically in background", isOn: $sparkle.automaticChecks)
+                    .font(.caption)
             }
         }
         .formStyle(.grouped)

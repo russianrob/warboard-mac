@@ -7,6 +7,11 @@ options:
   deploymentTarget:
     macOS: "14.0"
 
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.6.0"
+
 settings:
   base:
     MARKETING_VERSION: "0.1.0"
@@ -25,6 +30,9 @@ targets:
     platform: macOS
     sources:
       - path: Sources/Warboard
+    dependencies:
+      - package: Sparkle
+        product: Sparkle
     info:
       path: Sources/Warboard/Resources/Info.plist
       properties:
@@ -41,6 +49,16 @@ targets:
           NSAllowsArbitraryLoads: false
         # We talk to api.torn.com (HTTPS) and the user-configured
         # warboard URL (HTTPS by default); no exception domains needed.
+
+        # Sparkle 2.x — auto-update from a GitHub-hosted appcast feed.
+        # Public Ed25519 verifies download integrity; the private key
+        # lives in the GitHub Actions SPARKLE_PRIVATE_KEY secret and is
+        # only used by build-dmg.yml on tag pushes to sign the DMG +
+        # update appcast.xml.
+        SUFeedURL: https://raw.githubusercontent.com/russianrob/warboard-mac/main/appcast.xml
+        SUPublicEDKey: DRpNp8pBtClYRTTsXTmixwWg0MWAJ5P3JMOfCwlT6jQ=
+        SUEnableAutomaticChecks: true
+        SUEnableInstallerLauncherService: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tornwar.Warboard
