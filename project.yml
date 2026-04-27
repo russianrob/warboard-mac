@@ -48,3 +48,5 @@ targets:
         # No app sandbox in v0.1 to keep first-build friction low; can
         # add it once we wire keychain storage for the API key.
         ENABLE_APP_SANDBOX: NO
+        # AppIcon set in Assets.xcassets/AppIcon.appiconset
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

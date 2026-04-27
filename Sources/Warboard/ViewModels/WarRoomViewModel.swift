@@ -13,6 +13,12 @@ final class WarRoomViewModel: ObservableObject {
     @Published private(set) var state: State = .loading
     @Published private(set) var poll: WarPoll?
     @Published private(set) var lastPolledAt: Date?
+    /// Scout report — loaded on demand when the Report sub-tab opens.
+    @Published private(set) var scoutReport: ScoutReport?
+    @Published private(set) var scoutLoading = false
+    /// Both faction heatmaps. Refreshed each war-poll tick.
+    @Published private(set) var ourHeatmap:  [Int: [Int: HeatmapCell]] = [:]
+    @Published private(set) var theirHeatmap: [Int: [Int: HeatmapCell]] = [:]
 
     /// Bound at .task time from the View — see `bind(prefs:)`. The VM
     /// can't take prefs at init because @StateObject is constructed
@@ -84,6 +90,32 @@ final class WarRoomViewModel: ObservableObject {
             baseUrl: prefs.baseUrl, jwt: a.token, warId: merged.warId
         ) {
             poll = fresh
+        }
+        // Both faction heatmaps — same endpoint, different factionId.
+        // Diverging-color grid in the Heatmap sub-tab consumes both.
+        ourHeatmap = await WarboardAPI.fetchHeatmap(
+            baseUrl: prefs.baseUrl, jwt: a.token, factionId: a.factionId
+        )
+        if !merged.enemyFactionId.isEmpty {
+            theirHeatmap = await WarboardAPI.fetchHeatmap(
+                baseUrl: prefs.baseUrl, jwt: a.token, factionId: merged.enemyFactionId
+            )
+        }
+    }
+
+    /// Lazy scout-report fetch fired when the Report sub-tab opens. The
+    /// report endpoint hits FFScouter + Torn API server-side and is
+    /// rate-limited to a few requests per minute, so we don't auto-poll.
+    func loadScoutReport() {
+        Task {
+            guard let prefs = prefs, let auth = auth,
+                  case .active(let war) = state,
+                  let a = await auth.ensureAuth() else { return }
+            scoutLoading = true
+            scoutReport = await WarboardAPI.fetchScoutReport(
+                baseUrl: prefs.baseUrl, jwt: a.token, warId: war.warId
+            )
+            scoutLoading = false
         }
     }
 

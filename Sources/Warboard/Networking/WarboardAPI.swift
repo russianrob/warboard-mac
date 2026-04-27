@@ -93,6 +93,90 @@ enum WarboardAPI {
         }
     }
 
+    // MARK: Scout report + heatmap (War sub-tabs)
+
+    /// POST /api/war/<warId>/scout-report — server runs analyzeWarReport
+    /// (plus FFScouter lookup) and returns the rich report payload.
+    static func fetchScoutReport(baseUrl: String, jwt: String, warId: String) async -> ScoutReport? {
+        guard let encoded = warId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: baseUrl.trimmedSlash + "/api/war/\(encoded)/scout-report") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        req.httpBody = "{}".data(using: .utf8)
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            guard let r = root["report"] as? [String: Any] else { return nil }
+            return parseScoutReport(r)
+        } catch {
+            return nil
+        }
+    }
+
+    /// GET /api/heatmap?factionId=<fid> — day-of-week × hour-of-day
+    /// activity matrix. Same endpoint the Android client uses.
+    static func fetchHeatmap(baseUrl: String, jwt: String, factionId: String) async -> [Int: [Int: HeatmapCell]] {
+        guard let encoded = factionId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: baseUrl.trimmedSlash + "/api/heatmap?factionId=\(encoded)") else { return [:] }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            let hm = root["heatmap"] as? [String: [String: [String: Any]]] ?? [:]
+            var out: [Int: [Int: HeatmapCell]] = [:]
+            for (dayStr, hours) in hm {
+                guard let day = Int(dayStr) else { continue }
+                var inner: [Int: HeatmapCell] = [:]
+                for (hStr, c) in hours {
+                    guard let h = Int(hStr) else { continue }
+                    inner[h] = HeatmapCell(
+                        total:        (c["total"]        as? Int) ?? 0,
+                        samples:      (c["samples"]      as? Int) ?? 0,
+                        membersTotal: (c["membersTotal"] as? Int) ?? 0
+                    )
+                }
+                out[day] = inner
+            }
+            return out
+        } catch { return [:] }
+    }
+
+    /// POST /api/me/bars — push our bars + cooldowns to warboard so
+    /// the faction Members tab sees us as fresh. Same endpoint the
+    /// userscript hits whenever it scrapes a Torn page.
+    @discardableResult
+    static func reportMyBars(
+        baseUrl: String, jwt: String, snap: TornAPI.DashboardSnapshot
+    ) async -> Bool {
+        guard let url = URL(string: baseUrl.trimmedSlash + "/api/me/bars") else { return false }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        let body: [String: Any] = [
+            "bars": [
+                "energy":  ["current": snap.energy.current, "maximum": snap.energy.maximum, "fulltime": snap.energy.fulltime],
+                "nerve":   ["current": snap.nerve.current,  "maximum": snap.nerve.maximum,  "fulltime": snap.nerve.fulltime],
+                "happy":   ["current": snap.happy.current,  "maximum": snap.happy.maximum,  "fulltime": snap.happy.fulltime],
+                "life":    ["current": snap.life.current,   "maximum": snap.life.maximum,   "fulltime": snap.life.fulltime]
+            ],
+            "cooldowns": [
+                "drug":    snap.drugSeconds,
+                "medical": snap.medicalSeconds,
+                "booster": snap.boosterSeconds
+            ]
+        ]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            return (resp as? HTTPURLResponse)?.statusCode == 200
+        } catch { return false }
+    }
+
     /// POST /api/call — call/uncall an enemy in the war room.
     static func callTarget(
         baseUrl: String, jwt: String, warId: String,
@@ -117,6 +201,111 @@ enum WarboardAPI {
     }
 
     // MARK: - Parsing helpers
+
+    private static func parseScoutReport(_ r: [String: Any]) -> ScoutReport {
+        let ow      = r["warOverview"]  as? [String: Any]
+        let ourOv   = ow?["our"]   as? [String: Any]
+        let enemyOv = ow?["enemy"] as? [String: Any]
+        let tiers   = r["statTiers"]  as? [String: Any]
+        let safeHits = r["safeHits"]  as? [String: Any]
+        let battle   = r["battlePlan"] as? [String: Any]
+        let activity = r["activity"]  as? [String: Any]
+        let topEnd   = r["topEnd"]    as? [String: Any]
+
+        func tierCounts(_ side: [String: Any]?) -> TierCounts {
+            TierCounts(
+                s: (side?["S"] as? Int) ?? 0, a: (side?["A"] as? Int) ?? 0,
+                b: (side?["B"] as? Int) ?? 0, c: (side?["C"] as? Int) ?? 0,
+                d: (side?["D"] as? Int) ?? 0
+            )
+        }
+        func parsePlayer(_ p: [String: Any]?) -> ReportPlayer? {
+            guard let p = p else { return nil }
+            return ReportPlayer(
+                id: (p["id"] as? String) ?? "",
+                name: (p["name"] as? String) ?? "",
+                level: (p["level"] as? Int) ?? 0,
+                statsFormatted: (p["statsFormatted"] as? String) ?? "",
+                source: (p["source"] as? String) ?? ""
+            )
+        }
+        func playerList(_ src: [String: Any]?, key: String) -> [ReportPlayer] {
+            ((src?[key] as? [[String: Any]]) ?? []).compactMap(parsePlayer)
+        }
+        func parsePhase(name: String, targetsKey: String, ourKey: String? = nil) -> BattlePhase? {
+            guard let phase = battle?[name] as? [String: Any] else { return nil }
+            return BattlePhase(
+                description: (phase["description"] as? String) ?? "",
+                targets: playerList(phase, key: targetsKey),
+                ourPlayers: ourKey.map { playerList(phase, key: $0) } ?? []
+            )
+        }
+
+        func side(ov: [String: Any]?, t: [String: Any]?, act: [String: Any]?) -> ScoutSide {
+            ScoutSide(
+                factionName: (ov?["name"] as? String) ?? "",
+                members:    (ov?["memberCount"] as? Int) ?? 0,
+                respect:    (ov?["respect"]  as? Int) ?? 0,
+                bestChain:  (ov?["bestChain"] as? Int) ?? 0,
+                age:        (ov?["age"] as? Int) ?? 0,
+                tiers: tierCounts(t),
+                online:  (act?["online"]  as? Int) ?? 0,
+                idle:    (act?["idle"]    as? Int) ?? 0,
+                offline: (act?["offline"] as? Int) ?? 0,
+                activeCombat: (act?["activeCombatRoster"] as? Int) ?? 0
+            )
+        }
+
+        let matchups = ((topEnd?["matchups"] as? [[String: Any]]) ?? []).compactMap { mu -> Matchup? in
+            Matchup(
+                rank: (mu["rank"] as? Int) ?? 0,
+                ours: parsePlayer(mu["ours"] as? [String: Any]),
+                theirs: parsePlayer(mu["theirs"] as? [String: Any]),
+                advantage: (mu["advantage"] as? String) ?? "even"
+            )
+        }
+        let safe = SafeHits(
+            thresholds: ((safeHits?["thresholds"] as? [[String: Any]]) ?? []).map {
+                SafeHitThreshold(
+                    label: ($0["label"] as? String) ?? "",
+                    desc:  ($0["desc"]  as? String) ?? "",
+                    ourCount:      ($0["ourCount"]      as? Int) ?? 0,
+                    enemyFarmable: ($0["enemyFarmable"] as? Int) ?? 0
+                )
+            },
+            ourCanHitPct:     (safeHits?["ourCanHitPct"]     as? Int) ?? 0,
+            enemyFarmablePct: (safeHits?["enemyFarmablePct"] as? Int) ?? 0
+        )
+        let plan: BattlePlan? = battle.map { _ in
+            BattlePlan(
+                warPhase: (battle?["warPhase"] as? String) ?? "",
+                opening:  parsePhase(name: "opening", targetsKey: "chainTargets", ourKey: "ourChainers"),
+                midWar:   parsePhase(name: "midWar",  targetsKey: "permaTargets"),
+                endgame:  parsePhase(name: "endgame", targetsKey: "enemyThreats", ourKey: "ourHitters"),
+                ignore:   playerList(battle, key: "ignore"),
+                keyPermaTargets: playerList(battle, key: "keyPermaTargets")
+            )
+        }
+        let descObj = tiers?["descriptions"] as? [String: String] ?? [:]
+        let tierDesc = TierDescriptions(
+            s: descObj["S"] ?? "5B+ (elite)",
+            a: descObj["A"] ?? "1B–5B (strong)",
+            b: descObj["B"] ?? "250M–1B (solid)",
+            c: descObj["C"] ?? "50M–250M (filler)",
+            d: descObj["D"] ?? "<50M (non-threat)"
+        )
+        return ScoutReport(
+            our: side(ov: ourOv, t: tiers?["our"] as? [String: Any], act: activity?["our"] as? [String: Any]),
+            enemy: side(ov: enemyOv, t: tiers?["enemy"] as? [String: Any], act: activity?["enemy"] as? [String: Any]),
+            matchups: matchups,
+            safeHits: safe,
+            battlePlan: plan,
+            winProbability: (r["winProbability"] as? Int) ?? 0,
+            winReasoning: (r["winReasoning"] as? [String]) ?? [],
+            hasEstimates: (ow?["hasEstimates"] as? Bool) ?? false,
+            tierDescriptions: tierDesc
+        )
+    }
 
     private static func parseWar(_ o: [String: Any]) -> WarSnapshot {
         let enemyStatuses = o["enemyStatuses"] as? [String: [String: Any]] ?? [:]
