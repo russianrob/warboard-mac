@@ -158,10 +158,67 @@ private struct HeaderCard: View {
                         .foregroundStyle(.secondary).font(.caption)
                 }
             }
+            WarTimerRow(war: war, poll: poll, nowMs: nowMs)
             ChainBar(war: war, poll: poll, nowMs: nowMs)
         }
         .padding(12)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// War-end estimate. Mirrors the torn-ranked-war-timer.user.js formula:
+/// the target score drops 1 % of its original value per hour after the
+/// 24-hour mark, so the time until war-end is `gap / drop_per_hour`
+/// where `lead = abs(myScore - enemyScore)` and `gap = target - lead`.
+private struct WarTimerRow: View {
+    let war: WarSnapshot
+    let poll: WarPoll?
+    let nowMs: Int64
+
+    var body: some View {
+        let myScore    = poll?.myScore    ?? war.myScore
+        let enemyScore = poll?.enemyScore ?? war.enemyScore
+        let target     = poll?.targetScore ?? war.currentTarget ?? 0
+        guard let warStart = war.warStart, warStart > 0, target > 0 else {
+            return AnyView(EmptyView())
+        }
+        let elapsedHours = Double(nowMs / 1000 - warStart) / 3600
+        if elapsedHours <= 24 {
+            let waitHours = max(0, 24 - elapsedHours)
+            return AnyView(
+                Label("Drop starts in \(formatHM(Int(waitHours * 3600)))",
+                      systemImage: "hourglass")
+                    .foregroundStyle(.secondary).font(.caption.bold())
+            )
+        }
+        let dropHours = floor(elapsedHours - 24)
+        let originalTarget = Double(target) / max(0.01, 1 - (dropHours * 0.01))
+        let dropPerHour = originalTarget * 0.01
+        let lead = abs(myScore - enemyScore)
+        let gap = max(0, Double(target - lead))
+        if gap <= 0 {
+            return AnyView(
+                Label("War ending now", systemImage: "flag.checkered")
+                    .foregroundStyle(.green).font(.caption.bold())
+            )
+        }
+        let remHours = gap / dropPerHour
+        let remSeconds = Int(remHours * 3600)
+        let color: Color = remHours <= 2 ? .red : remHours <= 6 ? .orange : .green
+        return AnyView(
+            HStack(spacing: 6) {
+                Image(systemName: "timer")
+                Text("ends in \(formatHM(remSeconds))").monospacedDigit()
+            }
+            .font(.caption.bold())
+            .foregroundColor(color)
+        )
+    }
+
+    private func formatHM(_ totalSeconds: Int) -> String {
+        let h = totalSeconds / 3600
+        let m = (totalSeconds % 3600) / 60
+        return String(format: "%d:%02d", h, m)
     }
 }
 
@@ -232,9 +289,12 @@ private struct TargetList: View {
         .listStyle(.plain)
     }
 
-    /// Same priority bucket order as the Android `sortPriority` helper.
+    /// Sort priority — actionable targets at top, unavailable at the
+    /// bottom. Called targets are pushed to the very bottom (priority
+    /// 9) so they don't clutter the actionable list once a teammate
+    /// has them.
     private func priority(_ t: EnemyTarget) -> Double {
-        if !(t.calledBy ?? "").isEmpty { return 5.0 }
+        if !(t.calledBy ?? "").isEmpty { return 9.0 }
         switch t.status.lowercased() {
         case "okay", "ok":          return t.activity == "online" ? 1.0 : 1.5
         case "hospital":            return 2.0
