@@ -143,6 +143,60 @@ jobs:
           fi
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_OUTPUT"
 
+      - name: Re-sign Sparkle helpers
+        # Sparkle 2.x ships pre-built XPC services + Updater.app inside
+        # the framework — xcodebuild does NOT recursively re-sign them
+        # with our Developer ID, so notarization rejects them with "not
+        # signed with a valid Developer ID certificate" + "no secure
+        # timestamp". Apple recommends signing inside-out: each helper
+        # first, then the framework, then the app.
+        if: steps.cert_check.outputs.available == 'true'
+        env:
+          APP_PATH: ${{ steps.locate.outputs.APP_PATH }}
+        run: |
+          IDENTITY="Developer ID Application: Robert Hay (DAD59U75G9)"
+          SPARKLE="$APP_PATH/Contents/Frameworks/Sparkle.framework"
+          if [[ ! -d "$SPARKLE" ]]; then
+            echo "No Sparkle.framework found — nothing to re-sign."
+            exit 0
+          fi
+          SV="$SPARKLE/Versions/B"
+
+          if [[ -d "$SV/XPCServices" ]]; then
+            for xpc in "$SV/XPCServices/"*.xpc; do
+              echo "Re-signing $xpc"
+              codesign --force --sign "$IDENTITY" \
+                --options runtime --timestamp \
+                --preserve-metadata=entitlements \
+                "$xpc"
+            done
+          fi
+
+          if [[ -d "$SV/Updater.app" ]]; then
+            echo "Re-signing Updater.app"
+            codesign --force --sign "$IDENTITY" \
+              --options runtime --timestamp \
+              --preserve-metadata=entitlements \
+              "$SV/Updater.app"
+          fi
+
+          if [[ -e "$SV/Autoupdate" ]]; then
+            echo "Re-signing Autoupdate"
+            codesign --force --sign "$IDENTITY" \
+              --options runtime --timestamp \
+              "$SV/Autoupdate"
+          fi
+
+          echo "Re-signing Sparkle.framework"
+          codesign --force --sign "$IDENTITY" \
+            --options runtime --timestamp \
+            "$SPARKLE"
+
+          echo "Re-signing Warboard.app"
+          codesign --force --sign "$IDENTITY" \
+            --options runtime --timestamp \
+            "$APP_PATH"
+
       - name: Verify code signing
         if: steps.cert_check.outputs.available == 'true'
         run: |
@@ -167,8 +221,10 @@ jobs:
 
       - name: Notarize DMG
         # Submits the DMG to Apple's notary service and waits for the
-        # ticket (typically 2–5 min). On failure we dump the log so the
-        # cause shows up in CI output.
+        # ticket (typically 2–5 min). notarytool exits 0 on a successful
+        # *submission* even when Apple's verdict is "Invalid", so we
+        # parse the JSON status field ourselves and dump the rejection
+        # log on anything other than "Accepted".
         if: steps.cert_check.outputs.available == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -182,10 +238,12 @@ jobs:
             --password "$APPLE_APP_PASSWORD" \
             --wait \
             --output-format json > notary.json
-          STATUS=$?
+          SUBMIT_STATUS=$?
           cat notary.json
-          if [[ $STATUS -ne 0 ]]; then
-            SUBMISSION_ID="$(python3 -c 'import json,sys; print(json.load(open("notary.json")).get("id",""))')"
+          NOTARY_STATUS="$(python3 -c 'import json; print(json.load(open("notary.json")).get("status",""))')"
+          SUBMISSION_ID="$(python3 -c 'import json; print(json.load(open("notary.json")).get("id",""))')"
+          echo "notarytool exit=$SUBMIT_STATUS, verdict=$NOTARY_STATUS, id=$SUBMISSION_ID"
+          if [[ "$NOTARY_STATUS" != "Accepted" ]]; then
             if [[ -n "$SUBMISSION_ID" ]]; then
               echo "Fetching notary log for $SUBMISSION_ID"
               xcrun notarytool log "$SUBMISSION_ID" \
@@ -193,7 +251,7 @@ jobs:
                 --team-id "$APPLE_TEAM_ID" \
                 --password "$APPLE_APP_PASSWORD"
             fi
-            exit $STATUS
+            exit 1
           fi
 
       - name: Staple notarization ticket
